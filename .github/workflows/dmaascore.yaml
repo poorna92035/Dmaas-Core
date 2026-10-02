@@ -1,0 +1,152 @@
+name: Build and Publish Package
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  CODEARTIFACT_DOMAIN: my-domain
+  CODEARTIFACT_DOMAIN_OWNER: "123456789012"
+  CODEARTIFACT_REPOSITORY: my-repository
+
+jobs:
+
+###############################################################################
+# Validate + Unit Tests
+###############################################################################
+
+  validate-unit-tests:
+    name: Validate and Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Validate Package
+        run: npm ci --dry-run
+
+      - name: Run Unit Tests
+        run: npm test
+
+###############################################################################
+# Type / Lint / Security Checks
+###############################################################################
+
+  code-quality-security:
+    name: Type Lint Security Checks
+    runs-on: ubuntu-latest
+    needs: validate-unit-tests
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Type Check
+        run: npm run type-check
+
+      - name: Lint Check
+        run: npm run lint
+
+      - name: Security Audit
+        run: npm audit --audit-level=high
+
+###############################################################################
+# Build Stable Contracts / Utilities
+###############################################################################
+
+  build-contracts:
+    name: Build Stable Contracts Utilities
+    runs-on: ubuntu-latest
+    needs: code-quality-security
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Contracts
+        run: npm run build
+
+      - name: Package Artifacts
+        run: npm pack
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-artifact
+          path: "*.tgz"
+
+###############################################################################
+# Publish To AWS CodeArtifact
+###############################################################################
+
+  publish-codeartifact:
+    name: Publish To CodeArtifact
+    runs-on: ubuntu-latest
+    needs: build-contracts
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: package-artifact
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to CodeArtifact
+        run: |
+          aws codeartifact login \
+            --tool npm \
+            --repository $CODEARTIFACT_REPOSITORY \
+            --domain $CODEARTIFACT_DOMAIN \
+            --domain-owner $CODEARTIFACT_DOMAIN_OWNER \
+            --region $AWS_REGION
+
+      - name: Publish Package
+        run: npm publish
